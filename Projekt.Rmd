@@ -1,0 +1,408 @@
+---
+title: "Projekt Analiza Danych"
+author: "Łukasz Pyrek"
+date: "2022-11-18"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load-packages, message=FALSE, warning=FALSE}
+library(plyr)
+library(tidyr)
+library(dplyr)
+library(gapminder)
+library(ggplot2)
+library(tibble)
+library(ggrepel)
+```
+
+# **Wczytanie i czyszczenie danych**
+
+Wczytanie danych do listy "dane" oraz zamienienie ich z szerokich na wąskie.
+
+```{r}
+path = paste(getwd() ,"/Data/", sep = "")
+files <- list.files(path = path, pattern = "*.csv")
+dane <- list()
+
+for (file in files){
+  temp_name <- file
+  file <- tibble(read.csv(paste(path,file,sep = ""))) %>%
+    gather("year", !!temp_name , -country)
+  dane <- append(dane,list(file))
+}
+```
+
+Usuwanie "X" z kolumny "years"
+
+```{r}
+for(i in 1:length(dane)){
+  dane[[i]]$year <- as.numeric(gsub("X",'', dane[[i]]$year))
+}
+```
+
+Łączenie tabel
+
+```{r}
+data <- Reduce(
+  function(x, y) inner_join(x, y, by = c("year", "country")), 
+  dane
+)
+rm(dane, file, temp_name, path, files)
+```
+
+Zmiana nazw kolumn
+
+```{r}
+col_names <-  c("country","year","childWoman","income","lifeExp","medianAge","o65Pop",
+                "popGrowth", "popTotal", "u5Pop")
+colnames(data) <- col_names
+```
+
+filtrowanie danych tylko do lat 1965-2015
+
+```{r}
+data <- data %>%
+  filter(year %in% seq(1965,2015, by = 5))
+```
+
+Zamiana pustych stringów na NA
+
+```{r}
+data <- data %>% mutate_if(is.character, list(~na_if(.,""))) 
+```
+
+Zamiana złego znaku minusa w popGrowth
+
+```{r}
+data <- data %>% 
+  mutate(popGrowth = gsub("−","-",popGrowth))
+```
+
+Zamiana chr na numeric oraz skrótowcóW k,M,B
+
+```{r}
+konwersja <- function(s) {
+  x <- as.numeric(gsub("[kMB]", "", s)) 
+  u <- gsub("[0-9.]", "", s)
+  x <- x * 10^(3 * match(u, c("k", "M", "B"), nomatch = 0))
+  x
+}
+
+data <- data %>% dplyr::mutate(across(c(where(is.character),-"country"), konwersja))
+```
+
+Stworzenie kolumny "continent" korzystając z pakietu gapminder
+
+```{r}
+continents_gapminder <- gapminder %>% 
+  select(country, continent) %>%
+  filter(!duplicated(country))
+
+data <- left_join(data,continents_gapminder,by = "country")
+
+#wypisaniekrajów bez kontynentów i przypisanie ich "na piechote"
+temp <- data %>% select(country,continent) %>% filter(is.na(continent) == TRUE, !duplicated(country))
+Asia <- c("United Arab Emirates","Armenia","Azerbaijan","Brunei","Bhutan","Kazakhstan","Kyrgyz Republic",
+          "South Korea","Lao","Maldives","North Korea","Palestine","Qatar","Tajikistan","Turkmenistan",
+          "Timor-Leste","Uzbekistan","Yemen")
+Americas <- c("Antigua and Barbuda","Bahamas","Belize","Barbados","Georgia","Grenada","Guyana","St. Lucia",
+              "Suriname","St. Vincent and the Grenadines")
+Europe <- c("Belarus","Cyprus","Estonia","Lithuania","Luxembourg","Latvia","Moldova","North Macedonia","Malta",
+            "Russia","Ukraine")
+Africa <- c("Cape Verde","South Sudan","Eswatini","Seychelles")
+Oceania <- c("Fiji","Micronesia, Fed. Sts.","Kiribati","Papua New Guinea","Solomon Islands","Tonga","Vanuatu","Samoa")
+rm(temp)
+
+data <- data %>% 
+  mutate(temp_missing_continent = case_when(
+    country %in% Asia ~ "Asia",
+    country %in% Americas ~ "Americas",
+    country %in% Europe ~ "Europe",
+    country %in% Africa ~ "Africa",
+    country %in% Oceania ~ "Oceania"
+  )) %>%
+  mutate(continent = coalesce(continent, temp_missing_continent)) %>%
+  select(country, continent, year:u5Pop)
+  
+data$continent <- as.factor(data$continent)
+data$country <- as.factor(data$country)
+data$year <- as.integer(data$year)
+data <- na.omit(data) #usuniecie wierszy z brakami danych
+```
+
+## Dane:
+
+```{r}
+str(data)
+```
+
+country - factor 185, krajów\
+continent - kontynent na ktorym znajduje się kraj\
+year - int, lata 1965-2015 w odstępach co 5 lat\
+childWoman - ilość dzieci przypadających na kobiete\
+income - PKB per capita wg PPP (parypetu siły nabywczej) opisany w dolarach miedzynarodowych z roku 2017\
+lifeExp - oczekiwana długość życia  medianAge - mediana Wieku\
+o65Pop - ilość ludzi w wieku powyżej 65 lat\
+popGrowth - procentowy wzrost populacji w odniesieniu do roku poprzedniego popTotal - populacja\
+u5Pop - ilość dzieci w wieku 0-4lata\
+
+# **Pytania badawcze**
+
+# Pytanie badawcze nr1
+
+Jak liczba ludności zmieniła się na przestrzeni lat ?
+
+```{r}
+theme_set(theme_light())
+
+wykres <- ddply(data, .(continent,year), summarize, value = round(sum(popTotal)/1000000000,2)) %>%
+  spread(continent,value)
+
+p <- ggplot(wykres, aes(x=year)) + 
+  geom_area(aes(y=Oceania + Africa + Asia + Americas + Europe, fill="Oceania")) +
+  geom_area(aes(y=Africa + Asia + Americas + Europe, fill="Africa")) +
+  geom_area(aes(y=Asia + Americas + Europe, fill="Asia")) +
+  geom_area(aes(y=Americas + Europe, fill="Americas")) +
+  geom_area(aes(y=Europe, fill="Europe")) +
+  geom_area(aes(y=Europe, fill="Europe")) +
+  scale_x_continuous(n.breaks = 10) +
+  labs(title = "Populacja na świecie według kontynentów",
+       x = "rok",
+       y = "populacja(miliardy)",
+       fill = "Kontynent") +
+  theme(panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        legend.background = element_rect(fill='transparent'),
+        legend.box.background = element_rect(fill='transparent'))
+
+changePercent <- round(wykres[11,2:6]/wykres[1,2:6]*100,2)
+row.names(changePercent)[1] = "change%"
+changePercent
+p
+
+```
+
+Populacja Ziemii na przestrzeni lat 1965-2015 wzrosła o około 4 miliardy.
+Z czego najwiekszy wzrost wzgledem roku 1965 osiągnęła Afryka(368%), potem Azja(235%).
+Najmniejszy wzrost osiągneła Europa, tylko 122%.
+
+# Pytanie badawcze nr2
+
+Jak bardzo w ciągu ostatnich lat zmieniła sie średnia długość życia na poszczególnych kontynentach oraz na świecie ?\
+
+Wykres:
+
+```{r}
+lifeExpWorld <- ddply(data, .(year),summarize ,lifeExp = mean(lifeExp)) %>%
+  add_column(continent = "World", .after = "year")
+lifeExpCat <- ddply(data, .(year,continent), summarize ,lifeExp = mean(lifeExp))
+lifeExpCat <- rbind(lifeExpWorld, lifeExpCat)
+lifeExpCat$lifeExp <- round(lifeExpCat$lifeExp,2)
+
+lifeExpCat %>% 
+  ggplot() +
+  geom_line(mapping = aes(x = year, y = lifeExp, col = continent), size = 1.25) +
+  geom_point(aes(x = year, y = round(lifeExp,2)), 
+            data = lifeExpCat %>% filter(year %in% c("1965","2015"))) +
+  geom_text_repel(aes(label = lifeExp, x = year, y = round(lifeExp,2)), 
+                  data = lifeExpCat %>% filter(year %in% c("1965","2015")),
+                  fontface = "plain",
+                  color = "black",
+                  size = 3.5) +
+  scale_x_continuous(n.breaks = 10) +
+  theme(panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5)) +
+  ggtitle("Średnia długość życia w latach 1965-2015 na poszczególnych kontynentach") +
+  labs(y = "Średnia długość życia(lata)",
+       x = "Rok",
+       col = "Kontynenty")
+```
+
+Obliczenia:
+
+```{r}
+lifeExp1965 <- lifeExpCat %>% filter(year %in% c("1965")) %>%
+  select(lifeExp)
+lifeExp2015 <- lifeExpCat %>% filter(year %in% c("2015")) %>%
+  select(continent, lifeExp)
+roznica <- lifeExp2015 %>% 
+  cbind(lifeExp1965$lifeExp) %>%
+  mutate(change = lifeExp2015$lifeExp - lifeExp1965$lifeExp) %>%
+  add_column(changePercent = round((lifeExp2015$lifeExp-lifeExp1965$lifeExp)/lifeExp1965$lifeExp*100,2)) %>%
+  arrange(desc(changePercent)) %>%
+  dplyr::rename(lifeExp2015 = lifeExp, lifeExp1965 = "lifeExp1965$lifeExp")
+roznica
+```
+
+Powyższa tabela pokazuje o ile lat(procent) zwiększyła się przeciętna długość życia pomiędzy rokiem 1965 a 2015.
+
+Średnia długość życia na swiecie zwiększyła się o około 22.64% z czego najwiekszy zwrost mozna zauważyć na kontynentach gdzie owa długość życia była najmniejsza(Afryka i Azja wzrost prawie o 30%).
+
+# Pytanie badawcze nr3
+
+Jak zmieniła się liczba dzieci(0-4lata) oraz osób powyżej 65 roku życia na przestrzeni lat 1965-2015?
+
+```{r}
+totU5PopWorld <- ddply(data, .(year),summarize ,value = sum(u5Pop)) %>%
+  mutate(value = round(value/1000000,2)) %>%
+  mutate(type = "u5Pop")
+  
+totO65PopWorld <- ddply(data, .(year), summarize, value = sum(o65Pop)) %>%
+  mutate(value = round(value/1000000,2)) %>%
+  mutate(type = "o65Pop")
+
+data3raw <- rbind(totU5PopWorld, totO65PopWorld)
+
+totPop <- ddply(data, .(year), summarize, value = sum(popTotal)) %>%
+  mutate(value = round(value/1000000,2))
+
+totChildPopWorldPercent <- totU5PopWorld %>%
+  mutate(value = value/totPop$value*100)
+totPop65WorldPercent <- totO65PopWorld %>%
+  mutate(value = value/totPop$value*100)
+
+data3percent <- rbind(totChildPopWorldPercent, totPop65WorldPercent)
+
+data3raw %>%
+  ggplot() +
+  geom_line(aes(x = year, y = value, col = type),size = 1.25) +
+  labs(title ="Wykres liczby dzieci w wieku wieku 0-4 oraz osób powyzej 65roku życia\
+          na świecie",
+       x = "rok",
+       y = "ilość osób (mln)") +
+  scale_x_continuous(n.breaks = 10) +
+  geom_label_repel(aes(x = year, y = value + 80, col = type, label = type),
+                  data = data3raw %>% filter(year == 1965)) +
+  theme(panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "none")
+
+data3percent %>%
+  ggplot() +
+  geom_line(aes(x = year, y = value, col = type),size = 1.25) +
+  labs(title ="Wykres dzieci w wieku 0-4 oraz osób powyzej 65roku życia\
+          na świecie(% całej populacji)",
+       x = "rok",
+       y = "ilość osób (%)") +
+  scale_x_continuous(n.breaks = 10) +
+  scale_y_continuous(n.breaks = 6) +
+  geom_label_repel(aes(x = year, y = value, col = type, label = type),
+                   data = data3percent %>% filter(year == 1965)) +
+  theme(panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "none")
+
+```
+
+Analizując wykresy widzimy, że ilość seniorów rośnie znacząco szybciej od liczby dzieci poniżej 5lat, można spodziewać się że w roku 2020 jest już ona wyższa od liczby dzieci.
+Nie powinno nas to dziwić zważywszy na to że oczekiwana długość życia również znacząco wzrosła\
+
+# Pytanie badawcze nr4
+
+Obecnie liczba dzieci w wieku 0-4lata jest bliska liczbie osób powyżej 65 roku życia, ale jak ten stosunek jest rozmieszczony w poszczególnych regionach świata ?
+
+```{r}
+data2015 <- data %>% filter(year == 2015)
+totalCont <- ddply(data2015, .(continent),summarize, value = sum(popTotal))
+
+u5Cont <- ddply(data2015, .(continent),summarize, value = sum(u5Pop)) %>%
+  mutate(value = round(value/totalCont$value*100,2)) %>%
+  mutate(type = "under 5 (%)")
+o65Cont <- ddply(data2015, .(continent),summarize, value = sum(o65Pop)) %>%
+  mutate(value = round(value/totalCont$value*100,2)) %>%
+  mutate(type = "over 65 (%)")
+
+wykres3 <- rbind(u5Cont,o65Cont)
+
+ggplot(wykres3, aes(fill=type, y=value, x=continent)) +
+  geom_bar(position = "dodge",stat = "identity", width = 0.7) +
+  labs(title = "dzieci w wieku 0-4 roku życia vs. osoby powyżej 65 (%)") +
+  theme( plot.background = element_rect(fill='transparent', color=NA),
+         panel.grid.major.y = element_line(size=.1, color="black"),
+         panel.grid.major.x = element_blank(),
+         panel.grid.minor.y = element_line(size=.1, color="black"),
+         legend.background = element_rect(fill='transparent'),
+         legend.box.background = element_rect(fill='transparent'),
+         plot.title = element_text(hjust = 0.5)
+         )
+```
+
+Analizując wykres można zobaczyć że największe zróżnicowanie pomiędzy dziećmi a seniorami występuje w Afryce oraz Europie.
+W Afryce 15.7% ludności to dzieci poniżej 5 roku życia, natomiast osoby powyżej 65 roku życia to jedyne 3.35%.
+W Europie sytuacja wygląda odwrotnie: 16.55% to osoby powyżej 65 roku życia natomiast dzieci to tylko 5.72%.
+
+# Pytanie badawcze nr5
+
+Czy dochód jest zkorelowany z liczbą dzieci przypadających na kobiete?\
+
+Wykres:
+
+```{r}
+data2015 <- data %>% filter(year == 2015)
+data2015 %>%
+  ggplot() +
+  geom_point(mapping = aes(x = income, y = childWoman)) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 120000), breaks = seq(0,110000,10000)) + 
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 8), breaks = seq(0,8,1)) +
+  theme(panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5)) +
+  ggtitle("Wykres liczby dzieci przypadających na kobiete vs. PKB per capita wg PPP \n dla poszczególnych krajów w roku 2015") +
+  labs(y = "Liczba dzieci przypadających na kobiete",
+       x = "PKB per capita wg PPP") 
+```
+
+Jak widac na wykresie, współcześnie wraz ze zwrostem przychodu tendencja do posiadania wiekszej ilości dzieci przez kobiety maleje.\
+
+Zobaczmy co mówi współczynnik korelacji pearsona jak i również na temat lat poprzednich.
+
+Obliczenia:
+
+```{r}
+FUNcor <- function(x)
+{
+  return(data.frame(COR = cor(x$childWoman, x$income)))
+}
+ddply(data, .(year), FUNcor)
+```
+
+Możemy zauważyc że znacząca korelacja wystepuje dopiero po 1980 roku.
+Wnioskując, liczba dzieci przypadajacych na kobiete oraz PKB/capita (PPP) są umiarkowanie ze sobą skorelowane.
+Wraz z wzrostem PKB liczba dzieci przypadających na kobiete maleje.
+
+# Pytanie badawcze nr 6
+
+Na wcześniejszych wykresach można było zauważyć że w biedniejszych krajach kobiety chętniej posiadają dzieci jak i również oczekiwana długość życia jest mniejsza.
+Przekłada się to na mniejszą mediane wieku w tych krajach.\
+
+Jak wpływa to na ogólny wzrost populacji ?
+Czy kraje z mniejszą medianą wieku mają tendencje do większego wzrostu liczby ludności ?\
+
+```{r}
+data2015 <- data %>% filter(year == 2015)
+data2015 %>%
+  ggplot() +
+  geom_point(aes(x = medianAge, y = popGrowth, col = continent), size = 2.5) +
+  geom_smooth(aes(x = medianAge, y = popGrowth), method=lm, col = "black", se = FALSE) +
+  geom_hline(yintercept = 0) +
+  labs(title = "Wzrost populacji vs. Mediana wieku, 2015",
+       y = "Wzrost populacji (%)",
+       x = "Mediana wieku") +
+  theme_light()
+```
+
+Jak widać na wykresie kraje z mniejszą medianą wieku mają tendencje do większego wzrostu populacji.
+Obliczmy do tego jeszcze korelacje pearsona:
+
+```{r}
+cor(data2015$medianAge,data2015$popGrowth)
+```
+
+Wszystko się zgadza.
+Występuje średnia ujemna korelacja.
