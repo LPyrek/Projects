@@ -1,4 +1,4 @@
-# Projects
+# Projekt gapminder
 Projekt polega na przeprowadzeniu wstępnej analizy danych w języku R na wybranych zbiorach oraz odpowiedzi na postawione pytania badawcze. <br />
 
 Pliki: <br />
